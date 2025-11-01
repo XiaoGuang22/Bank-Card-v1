@@ -3,12 +3,13 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import numpy as np
-import pandas as pd  # 读取 Excel 标签
+import pandas as pd
 
 
 class CardDataset(Dataset):
     """
-    卡号识别数据集
+    卡号识别数据集（使用 < 和 > 作为BOS/EOS标记）
+    
     - 数据目录结构：
         datasets/
         ├─ train/
@@ -20,14 +21,31 @@ class CardDataset(Dataset):
         └─ test/
             ├─ images...
             └─ test_labels.xlsx
+    
+    - 标签格式要求：
+        ⭐ Excel中的标签必须已经包含 < 和 > 标记 ⭐
+        正确格式：'<4532/1234/5678/9012>'
+        错误格式：'4532/1234/5678/9012'（缺少<>）
+        
+        数据集会检查标签格式：
+        - 必须以 '<' 开头
+        - 必须以 '>' 结尾
+        - 不符合格式的样本会被跳过并给出警告
+    
     - 固定高度，宽度按比例缩放
     - 使用方案A：统一黑色填充（-1.0）
     """
-    CHARS = '0123456789/_'  # ⭐ 添加 _ 作为结束标记
+    
+    # ⭐ 字符集：包含 < 和 > 作为BOS/EOS标记
+    CHARS = '0123456789/<>'
     CHAR2LABEL = {char: i + 1 for i, char in enumerate(CHARS)}
     LABEL2CHAR = {label: char for char, label in CHAR2LABEL.items()}
-    EOS_CHAR = '_'  # ⭐ 定义结束字符
-    EOS_LABEL = CHAR2LABEL[EOS_CHAR]  # ⭐ 结束字符对应的label
+    
+    # ⭐ 定义BOS和EOS（使用不同的字符）
+    BOS_CHAR = '<'
+    EOS_CHAR = '>'
+    BOS_LABEL = CHAR2LABEL[BOS_CHAR]  # 12
+    EOS_LABEL = CHAR2LABEL[EOS_CHAR]  # 13
 
     def __init__(self, image_dir, mode, img_height, img_width=None):
         """
@@ -57,7 +75,12 @@ class CardDataset(Dataset):
         
         Excel 格式要求：
         - filename: 图片文件名
-        - CardNumberlabel: 文本标签（需要以 _ 结尾，如 "4/4/4/4_"）
+        - CardNumberlabel: 文本标签（必须包含<>，如 "<4532/1234/5678/9012>"）
+        
+        ⭐⭐⭐ 只检查标签格式，不自动修改 ⭐⭐⭐
+        - 标签必须以 '<' 开头
+        - 标签必须以 '>' 结尾
+        - 不符合格式的样本会被跳过并给出警告
         
         仅保留目录中实际存在且为图片的文件。
         """
@@ -101,20 +124,33 @@ class CardDataset(Dataset):
         texts = []
         missing = 0
         not_image = 0
-        no_eos = 0  # ⭐ 统计没有结束标记的标签
+        invalid_format = 0  # ⭐ 统计格式错误的数量
 
         for _, row in df.iterrows():
             name = str(row['filename']).strip()
             label = str(row[label_col]).strip()
             
-            # ⭐ 检查标签是否以 _ 结尾
+            # ⭐⭐⭐ 只检查标签格式，不修改 ⭐⭐⭐
+            # 1. 检查是否以 '<' 开头
+            if not label.startswith(self.BOS_CHAR):
+                print(f"⚠️ 警告：标签 '{label}' 缺少开头的 '<'（文件：{name}），已跳过")
+                invalid_format += 1
+                continue
+            
+            # 2. 检查是否以 '>' 结尾
             if not label.endswith(self.EOS_CHAR):
-                no_eos += 1
-                print(f"⚠️ 警告：标签 '{label}' 没有以 '{self.EOS_CHAR}' 结尾（文件：{name}）")
-                # 可以选择自动添加或跳过
-                # label = label + self.EOS_CHAR  # 自动添加（可选）
-                # continue  # 跳过（可选）
+                print(f"⚠️ 警告：标签 '{label}' 缺少结尾的 '>'（文件：{name}），已跳过")
+                invalid_format += 1
+                continue
+            
+            # 3. 验证标签中的所有字符都在字符集中
+            invalid_chars = [c for c in label if c not in self.CHARS]
+            if invalid_chars:
+                print(f"⚠️ 警告：标签 '{label}' 包含无效字符 {set(invalid_chars)}（文件：{name}），已跳过")
+                invalid_format += 1
+                continue
 
+            # 4. 检查图片文件是否存在
             img_path = os.path.join(self.image_dir, name)
             if not os.path.isfile(img_path):
                 missing += 1
@@ -122,17 +158,37 @@ class CardDataset(Dataset):
             if not self._is_image_file(name):
                 not_image += 1
                 continue
+            
+            # ⭐ 标签格式正确，添加到列表
             filenames.append(name)
             texts.append(label)
 
+        # 打印统计信息
+        print(f"\n{'='*70}")
+        print(f"[{self.mode.upper()}] 数据集加载统计")
+        print(f"{'='*70}")
+        print(f"✅ 成功加载: {len(filenames)} 张图片（来自 {label_filename}）")
+        
+        if invalid_format > 0:
+            print(f"⚠️  格式错误: {invalid_format} 条记录的标签格式不正确（缺少<>或包含无效字符）")
         if missing > 0:
-            print(f"⚠️ 提示：{missing} 条记录的图片文件未找到，已跳过")
+            print(f"⚠️  文件缺失: {missing} 条记录的图片文件未找到")
         if not_image > 0:
-            print(f"⚠️ 提示：{not_image} 条记录不是图片文件，已跳过")
-        if no_eos > 0:
-            print(f"⚠️ 提示：{no_eos} 条记录的标签没有以 '{self.EOS_CHAR}' 结尾")
-
-        print(f"✅ [{self.mode.upper()}] 加载完成：共 {len(filenames)} 张图片（来自 {label_filename}）")
+            print(f"⚠️  非图片: {not_image} 条记录不是图片文件")
+        
+        if texts:
+            print(f"\n标签格式示例:")
+            for i, text in enumerate(texts[:3]):  # 显示前3个标签
+                print(f"  [{i+1}] '{text}'")
+            print(f"\n✅ 标签格式正确：所有标签都以 '<' 开头，'>' 结尾")
+        else:
+            print(f"\n❌ 警告：没有加载到任何有效数据！")
+            print(f"   请检查：")
+            print(f"   1. Excel 中的标签是否包含 '<' 和 '>'")
+            print(f"   2. 图片文件是否存在")
+        
+        print(f"{'='*70}\n")
+        
         return filenames, texts
 
     def _is_image_file(self, filename):
@@ -170,13 +226,17 @@ class CardDataset(Dataset):
             image = np.array(image)
             image = image.reshape((1, self.img_height, new_w))
             
+            # 归一化到 [-1, 1]
             image = (image / 127.5) - 1.0
             image = torch.FloatTensor(image)
 
             if len(self.texts) != 0:
                 text = self.texts[index]
+                
+                # ⭐ 将文本转换为label序列（已经包含BOS和EOS）
                 target = [self.CHAR2LABEL[c] for c in text]
                 target_length = [len(target)]
+                
                 target = torch.LongTensor(target)
                 target_length = torch.LongTensor(target_length)
                 return image, target, target_length
@@ -188,24 +248,27 @@ class CardDataset(Dataset):
             if self.mode in ["train", "val", "test"]:
                 print(f"   文件名：{self.file_names[index]}")
             print(f"   详细信息：{e}")
+            
+            # 返回dummy数据
             dummy_image = torch.full((1, self.img_height, 100), -1.0)
             if len(self.texts) != 0:
-                dummy_target = torch.LongTensor([1])
-                dummy_length = torch.LongTensor([1])
+                # ⭐ dummy标签：只包含BOS和EOS
+                dummy_target = torch.LongTensor([self.BOS_LABEL, self.EOS_LABEL])
+                dummy_length = torch.LongTensor([2])
                 return dummy_image, dummy_target, dummy_length
             else:
                 return dummy_image
 
 
-
-# ========== 方案A：统一黑色填充 ==========
+# ========== 方案A：统一黑色填充（与BOS/EOS标记兼容）==========
 def cardnumber_collate_fn(batch):
     """
-    方案A：统一黑色填充（-1.0）
+    方案A：统一黑色填充（-1.0）+ BOS/EOS标记
     
     特点：
     - 训练测试完全一致
     - 模型会学习"黑色边缘=结束"
+    - 配合BOS/EOS标记，提供明确的序列边界
     - 简单高效
     
     Args:
@@ -213,7 +276,7 @@ def cardnumber_collate_fn(batch):
     
     Returns:
         images: (B, 1, H, W) - 填充后的图像batch
-        targets: (sum(target_lengths),) - 拼接的目标序列
+        targets: (sum(target_lengths),) - 拼接的目标序列（包含BOS/EOS）
         target_lengths: (B,) - 每个样本的目标长度
         original_widths: (B,) - 每个样本的原始宽度（用于计算input_lengths）
     """
@@ -244,3 +307,64 @@ def cardnumber_collate_fn(batch):
     original_widths = torch.LongTensor(original_widths)
     
     return images, targets, target_lengths, original_widths
+
+
+# ========== 测试代码 ==========
+if __name__ == '__main__':
+    print("="*70)
+    print("测试 CardDataset（BOS='<', EOS='>'）")
+    print("="*70)
+    
+    # 打印字符集信息
+    print(f"\n字符集: '{CardDataset.CHARS}'")
+    print(f"字符到标签的映射:")
+    for char, label in sorted(CardDataset.CHAR2LABEL.items(), key=lambda x: x[1]):
+        print(f"  '{char}' -> {label}")
+    
+    print(f"\nBOS标记: '{CardDataset.BOS_CHAR}' (label={CardDataset.BOS_LABEL})")
+    print(f"EOS标记: '{CardDataset.EOS_CHAR}' (label={CardDataset.EOS_LABEL})")
+    
+    # 测试标签格式检查
+    print(f"\n{'='*70}")
+    print("测试标签格式检查")
+    print(f"{'='*70}")
+    
+    test_cases = [
+        ('<1234567890>', True, '正确格式'),
+        ('<5210/0000/1772/3664>', True, '正确格式（带斜杠）'),
+        ('1234567890', False, '缺少<>'),
+        ('<1234567890', False, '缺少>'),
+        ('1234567890>', False, '缺少<'),
+        ('<1234/5678/9012>', True, '正确格式'),
+        ('<1234_5678>', False, '包含无效字符_'),
+    ]
+    
+    for label, should_pass, desc in test_cases:
+        # 检查格式
+        valid = True
+        reason = []
+        
+        if not label.startswith(CardDataset.BOS_CHAR):
+            valid = False
+            reason.append("缺少开头的'<'")
+        
+        if not label.endswith(CardDataset.EOS_CHAR):
+            valid = False
+            reason.append("缺少结尾的'>'")
+        
+        invalid_chars = [c for c in label if c not in CardDataset.CHARS]
+        if invalid_chars:
+            valid = False
+            reason.append(f"包含无效字符{set(invalid_chars)}")
+        
+        status = "✅" if valid == should_pass else "❌"
+        print(f"\n{status} 标签: '{label}'")
+        print(f"   描述: {desc}")
+        print(f"   预期: {'通过' if should_pass else '不通过'}")
+        print(f"   实际: {'通过' if valid else '不通过'}")
+        if not valid:
+            print(f"   原因: {', '.join(reason)}")
+    
+    print(f"\n{'='*70}")
+    print("✅ 测试完成！")
+    print(f"{'='*70}")

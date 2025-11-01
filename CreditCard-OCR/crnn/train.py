@@ -9,7 +9,11 @@ from evaluate import evaluate
 from torch.utils.data import DataLoader
 from dataset import CardDataset, cardnumber_collate_fn
 
+
 def train_batch(crnn, data, optimizer, criterion, device):
+    """
+    训练一个batch
+    """
     crnn.train()
     images, targets, target_lengths, original_widths = [d.to(device) for d in data]
 
@@ -28,43 +32,64 @@ def train_batch(crnn, data, optimizer, criterion, device):
     optimizer.step()
     return loss.item()
 
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f'device: {device}')
+    print(f'使用设备: {device}')
     
-    # 加载数据集
-    train_dataset = CardDataset(image_dir=data_dir+'/train', mode='train',
-                                    img_height=img_height, img_width=img_width)
+    # ⭐ 加载数据集
+    train_dataset = CardDataset(
+        image_dir=data_dir+'/train', 
+        mode='train',
+        img_height=img_height, 
+        img_width=img_width
+    )
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=train_batch_size,
         shuffle=True,
         num_workers=num_workers,
-        collate_fn=cardnumber_collate_fn)
+        collate_fn=cardnumber_collate_fn
+    )
     
-    num_class = len(CardDataset.LABEL2CHAR) + 1
-    print(f"\nCharacter Set: '{CardDataset.CHARS}'")
-    print(f"Number of Classes: {num_class} (including blank)\n")
+    # ⭐ 打印字符集信息
+    num_class = len(CardDataset.CHARS) + 1  # 字符数 + blank
+    print(f"\n{'='*60}")
+    print("数据集信息")
+    print(f"{'='*60}")
+    print(f"字符集: '{CardDataset.CHARS}'")
+    print(f"类别数: {num_class} (包含blank)")
+    print(f"BOS标记: '{CardDataset.BOS_CHAR}' (label={CardDataset.BOS_LABEL})")
+    print(f"EOS标记: '{CardDataset.EOS_CHAR}' (label={CardDataset.EOS_LABEL})")
+    print(f"训练样本数: {len(train_dataset)}")
+    print(f"{'='*60}\n")
     
-    crnn = CRNN(1, img_height, img_width, num_class,
-                map_to_seq_hidden=map_to_seq_hidden,
-                rnn_hidden=rnn_hidden,
-                leaky_relu=leaky_relu,
-                backbone=backbone)
+    # ⭐ 创建模型
+    crnn = CRNN(
+        1, img_height, img_width, num_class,
+        map_to_seq_hidden=map_to_seq_hidden,
+        rnn_hidden=rnn_hidden,
+        leaky_relu=leaky_relu,
+        backbone=backbone
+    )
     print(crnn)
 
+    # ⭐ 加载checkpoint（如果有）
     if reload_checkpoint:
         crnn.load_state_dict(torch.load(reload_checkpoint, map_location=device))
-        print(f"✅ Loaded checkpoint: {reload_checkpoint}")
+        print(f"\n✅ 加载checkpoint: {reload_checkpoint}")
     crnn.to(device)
     
-    # 优化器和损失函数
+    # ⭐ 优化器和损失函数
     if optim_config == 'adam':
         optimizer = optim.Adam(crnn.parameters(), lr=lr)
     elif optim_config == 'sgd':
         optimizer = optim.SGD(crnn.parameters(), lr=lr)
     elif optim_config == 'rmsprop':
         optimizer = optim.RMSprop(crnn.parameters(), lr=lr)
+    else:
+        raise ValueError(f"❌ 不支持的优化器: {optim_config}")
+    
     criterion = CTCLoss(reduction='sum')
     criterion.to(device)
 
@@ -72,18 +97,22 @@ def main():
     best_epoch = None
     data = []
     
-    # 保存路径
+    # ⭐ 创建保存目录
     os.makedirs('./runs/recognition', exist_ok=True)
     run = 1
     while os.path.exists('./runs/recognition/run'+str(run)):
         run += 1
     os.makedirs('./runs/recognition/run'+str(run)+'/checkpoints', exist_ok=True)
-    os.makedirs('./runs/recognition/run'+str(run)+'/visualizations', exist_ok=True)  # ⭐ 创建可视化目录
+    os.makedirs('./runs/recognition/run'+str(run)+'/visualizations', exist_ok=True)
     save_path = './runs/recognition/run'+str(run)
     
-    print(f"Save Path: {save_path}\n")
+    print(f"\n保存路径: {save_path}\n")
 
-    # 训练
+    # ⭐ 开始训练
+    print(f"{'='*60}")
+    print("开始训练")
+    print(f"{'='*60}\n")
+    
     for epoch in range(1, epochs + 1):
         print(f'\n{"="*60}')
         print(f'Epoch {epoch}/{epochs}')
@@ -100,24 +129,30 @@ def main():
             train_size = train_data[0].size(0)
             total_train_loss += loss
             total_train_count += train_size
-            print('train_batch_loss[', index, ' / ', length, ']: ', loss / train_size, end="\r")
+            print(f'train_batch_loss [{index}/{length}]: {loss / train_size:.4f}', end="\r")
             index += 1
         
-        print('total_train_loss: ', total_train_loss / total_train_count)
+        avg_train_loss = total_train_loss / total_train_count
+        print(f'\ntotal_train_loss: {avg_train_loss:.4f}')
+        
         temp = []
         temp.append(epoch)
-        temp.append(total_train_loss / total_train_count)
+        temp.append(avg_train_loss)
 
+        # 保存最新的模型
         torch.save(crnn.state_dict(), save_path + '/checkpoints/crnn last.pt')
         
         # ⭐ 每轮都启用调试和可视化
         vis_dir = save_path + f'/visualizations/epoch_{epoch}'
         os.makedirs(vis_dir, exist_ok=True)
         
+        # ⭐⭐⭐ 修复：使用正确的BOS和EOS标记 ⭐⭐⭐
         test_loss, test_accuracy, val_loss, val_accuracy = evaluate(
             crnn, data_dir, 
-            debug=True,    # ⭐ 所有epoch都启用调试
-            save_dir=vis_dir  # ⭐ 每轮保存可视化结果
+            debug=True,
+            save_dir=vis_dir,
+            bos_label=CardDataset.BOS_LABEL,  # ✅ 使用 '<' 的label
+            eos_label=CardDataset.EOS_LABEL   # ✅ 使用 '>' 的label
         )
         
         temp.append(val_loss)
@@ -127,13 +162,14 @@ def main():
         data.append(temp)
         
         print(f'\nval_loss: {val_loss:.4f}')
-        print(f'val_accu: {val_accuracy:.4f}')
+        print(f'val_accu: {val_accuracy*100:.2f}%')
         print(f'test_loss: {test_loss:.4f}')
-        print(f'accuracy: {test_accuracy:.4f}')
+        print(f'test_accu: {test_accuracy*100:.2f}%')
 
+        # 保存结果到CSV
         with open(save_path + '/results.csv', 'w', encoding='utf-8-sig', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow(['epoch','train_loss','val_loss', 'val_accu', 'test_loss', 'accuracy'])
+            writer.writerow(['epoch','train_loss','val_loss', 'val_accu', 'test_loss', 'test_accu'])
             writer.writerows(data)
         
         # 保存最好的模型
@@ -141,17 +177,21 @@ def main():
             best_accuracy = test_accuracy
             best_epoch = epoch
             torch.save(crnn.state_dict(), save_path + '/checkpoints/crnn best.pt')
-            print('save model at ' + save_path + '/checkpoints/crnn best.pt')
-        # earlystop策略
+            print(f'✅ 保存最佳模型到: {save_path}/checkpoints/crnn best.pt')
+        
+        # ⭐ Early stopping策略
         elif best_epoch is not None and epoch - best_epoch > early_stop:
-            print('early stopped because not improved for {} epochs'.format(early_stop))
+            print(f'\n⚠️ Early stopping: 已经{early_stop}个epoch没有提升')
             break
 
+    # ⭐ 训练完成
     print('\n' + "="*60)
-    print('Training Completed')
+    print('训练完成')
     print("="*60)
-    print('best epoch:', best_epoch)
-    print('best accuracy:', best_accuracy)
+    print(f'最佳epoch: {best_epoch}')
+    print(f'最佳准确率: {best_accuracy*100:.2f}%')
+    print(f'结果保存在: {save_path}')
+    print("="*60)
 
 
 if __name__ == '__main__':

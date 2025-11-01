@@ -17,5 +17,5 @@ leaky_relu = False
 optim_config = 'adam'
 # ResNet / LCNet / MobileNet
 backbone = 'LCNet'
-CHARS = '0123456789/'
+CHARS = '0123456789/<>'
 num_class = len(CHARS) + 1
