@@ -11,21 +11,23 @@ class CardDataset(Dataset):
     卡号识别数据集
     - 数据目录结构：
         datasets/
-          ├─ train/
-          │   ├─ images...
-          │   └─ train_labels.xlsx
-          ├─ val/
-          │   ├─ images...
-          │   └─ val_labels.xlsx
-          └─ test/
-              ├─ images...
-              └─ test_labels.xlsx
+        ├─ train/
+        │   ├─ images...
+        │   └─ train_labels.xlsx
+        ├─ val/
+        │   ├─ images...
+        │   └─ val_labels.xlsx
+        └─ test/
+            ├─ images...
+            └─ test_labels.xlsx
     - 固定高度，宽度按比例缩放
     - 使用方案A：统一黑色填充（-1.0）
     """
-    CHARS = '0123456789/'
+    CHARS = '0123456789/_'  # ⭐ 添加 _ 作为结束标记
     CHAR2LABEL = {char: i + 1 for i, char in enumerate(CHARS)}
     LABEL2CHAR = {label: char for char, label in CHAR2LABEL.items()}
+    EOS_CHAR = '_'  # ⭐ 定义结束字符
+    EOS_LABEL = CHAR2LABEL[EOS_CHAR]  # ⭐ 结束字符对应的label
 
     def __init__(self, image_dir, mode, img_height, img_width=None):
         """
@@ -39,9 +41,9 @@ class CardDataset(Dataset):
         self.mode = mode
         self.image_dir = image_dir
         self.img_height = img_height
-        self.img_width = img_width  # 保留但不使用
+        self.img_width = img_width
         
-        if mode in ["train", "val", "test"]:  # ✅ 修改：添加 test 模式
+        if mode in ["train", "val", "test"]:
             file_names, texts = self._load_from_labels_excel()
             self.file_names = file_names
         self.texts = texts
@@ -55,11 +57,10 @@ class CardDataset(Dataset):
         
         Excel 格式要求：
         - filename: 图片文件名
-        - CardNumberlabel: 文本标签
+        - CardNumberlabel: 文本标签（需要以 _ 结尾，如 "4/4/4/4_"）
         
         仅保留目录中实际存在且为图片的文件。
         """
-        # ✅ 修改：根据 mode 确定标签文件名
         label_filename_map = {
             'train': 'train_labels.xlsx',
             'val': 'val_labels.xlsx',
@@ -73,7 +74,6 @@ class CardDataset(Dataset):
         
         excel_path = os.path.join(self.image_dir, label_filename)
         
-        # ✅ 修改：更详细的错误提示
         if not os.path.isfile(excel_path):
             print(f"❌ 错误：未找到标签文件 {excel_path}")
             print(f"   提示：请确保 {label_filename} 存在于 {self.image_dir} 目录下")
@@ -86,7 +86,6 @@ class CardDataset(Dataset):
             print(f"   详细信息：{e}")
             return [], []
 
-        # 兼容不同列名
         if 'filename' not in df.columns:
             print(f"❌ 错误：Excel 缺少列 'filename'")
             print(f"   当前列名：{list(df.columns)}")
@@ -102,10 +101,19 @@ class CardDataset(Dataset):
         texts = []
         missing = 0
         not_image = 0
+        no_eos = 0  # ⭐ 统计没有结束标记的标签
 
         for _, row in df.iterrows():
             name = str(row['filename']).strip()
             label = str(row[label_col]).strip()
+            
+            # ⭐ 检查标签是否以 _ 结尾
+            if not label.endswith(self.EOS_CHAR):
+                no_eos += 1
+                print(f"⚠️ 警告：标签 '{label}' 没有以 '{self.EOS_CHAR}' 结尾（文件：{name}）")
+                # 可以选择自动添加或跳过
+                # label = label + self.EOS_CHAR  # 自动添加（可选）
+                # continue  # 跳过（可选）
 
             img_path = os.path.join(self.image_dir, name)
             if not os.path.isfile(img_path):
@@ -121,11 +129,12 @@ class CardDataset(Dataset):
             print(f"⚠️ 提示：{missing} 条记录的图片文件未找到，已跳过")
         if not_image > 0:
             print(f"⚠️ 提示：{not_image} 条记录不是图片文件，已跳过")
+        if no_eos > 0:
+            print(f"⚠️ 提示：{no_eos} 条记录的标签没有以 '{self.EOS_CHAR}' 结尾")
 
-        # ✅ 修改：更详细的加载信息
         print(f"✅ [{self.mode.upper()}] 加载完成：共 {len(filenames)} 张图片（来自 {label_filename}）")
         return filenames, texts
-    
+
     def _is_image_file(self, filename):
         """检查是否为图片文件"""
         valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.gif', '.tiff'}
@@ -136,15 +145,14 @@ class CardDataset(Dataset):
             return 1
         else:
             return len(self.file_names)
-        
+    
     def __getitem__(self, index):
         try:
-            if self.mode in ["train", "val", "test"]:  # ✅ 修改：添加 test 模式
+            if self.mode in ["train", "val", "test"]:
                 file_name = self.file_names[index]
                 file_path = os.path.join(self.image_dir, file_name)
                 image = Image.open(file_path)
             elif self.mode == "pred":
-                # 此时image_dir为PIL.Image对象
                 image = self.image_dir
             else:
                 raise ValueError(f"❌ 不支持的模式: {self.mode}")
@@ -153,23 +161,18 @@ class CardDataset(Dataset):
             image = image.convert('L')
             orig_w, orig_h = image.size
             
-            # ✅ 修复：处理异常尺寸
             if orig_h == 0 or orig_w == 0:
                 raise ValueError(f"❌ 图片尺寸异常: {orig_w}x{orig_h}")
             
-            # 按比例缩放宽度
             new_w = max(4, int(round(orig_w * (self.img_height / float(orig_h)))))
             
-            # 调整大小
             image = image.resize((new_w, self.img_height), Image.BILINEAR)
             image = np.array(image)
             image = image.reshape((1, self.img_height, new_w))
             
-            # 归一化到[-1, 1]
             image = (image / 127.5) - 1.0
             image = torch.FloatTensor(image)
 
-            # 返回数据
             if len(self.texts) != 0:
                 text = self.texts[index]
                 target = [self.CHAR2LABEL[c] for c in text]
@@ -185,14 +188,14 @@ class CardDataset(Dataset):
             if self.mode in ["train", "val", "test"]:
                 print(f"   文件名：{self.file_names[index]}")
             print(f"   详细信息：{e}")
-            # 返回一个默认的空白图片
             dummy_image = torch.full((1, self.img_height, 100), -1.0)
             if len(self.texts) != 0:
-                dummy_target = torch.LongTensor([1])  # 默认标签
+                dummy_target = torch.LongTensor([1])
                 dummy_length = torch.LongTensor([1])
                 return dummy_image, dummy_target, dummy_length
             else:
                 return dummy_image
+
 
 
 # ========== 方案A：统一黑色填充 ==========

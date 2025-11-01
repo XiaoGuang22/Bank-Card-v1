@@ -2,7 +2,7 @@ import torch
 import os
 import matplotlib.pyplot as plt
 import matplotlib
-matplotlib.use('Agg')  # 使用非交互式后端，避免显示窗口
+matplotlib.use('Agg')
 
 from config import *
 from model import CRNN
@@ -32,27 +32,24 @@ def visualize_predictions(images, targets, target_lengths, preds, save_path, num
     
     target_length_counter = 0
     for i in range(batch_size):
-        # 获取图像
-        img = images[i, 0].cpu().numpy()  # (H, W)
+        img = images[i, 0].cpu().numpy()
         
-        # 获取真实标签
         target_length = target_lengths[i].item()
         real = targets[target_length_counter:target_length_counter + target_length].cpu().numpy().tolist()
         target_length_counter += target_length
         
-        # 解码真实标签和预测标签
-        real_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in real])
+        # ⭐ 去除结束标记后再显示
+        real_without_eos = [label for label in real if label != CardDataset.EOS_LABEL]
+        
+        real_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in real_without_eos])
         pred_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in preds[i]])
         
-        # 判断是否正确
-        is_correct = (preds[i] == real)
+        is_correct = (preds[i] == real_without_eos)
         color = 'green' if is_correct else 'red'
-        status = '[OK]' if is_correct else '[ERR]'  # 使用文本替代emoji避免字体问题
+        status = '[OK]' if is_correct else '[ERR]'
         
-        # 显示图像
         axes[i].imshow(img, cmap='gray')
         axes[i].axis('off')
-        # 使用英文标签避免字体问题
         title_parts = [
             f"{status} Real: '{real_text}'" if real_text else f"{status} Real: ''",
             f"Pred: '{pred_text}'" if pred_text else "Pred: ''"
@@ -81,7 +78,6 @@ def process(crnn, dataloader, criterion, device, decode_method, beam_size, debug
     total_correct = 0
     wrong_cases = []
     
-    # ✅ 添加：用于可视化的第一个batch
     first_batch_data = None
     
     for batch_idx, data in enumerate(dataloader):
@@ -94,7 +90,13 @@ def process(crnn, dataloader, criterion, device, decode_method, beam_size, debug
         input_lengths = torch.clamp((original_widths // 4) - 1, min=1, max=logits.size(0)).to(device)
 
         loss = criterion(log_probs, targets, input_lengths, target_lengths)
-        preds = ctc_decode(log_probs, method=decode_method, beam_size=beam_size)
+        
+        # ⭐ 传入结束标记的label
+        preds = ctc_decode(log_probs, method=decode_method, beam_size=beam_size, eos_label=CardDataset.EOS_LABEL)
+        
+        # ⭐ 移除预测结果中的所有结束标记
+        preds = [[l for l in pred if l != CardDataset.EOS_LABEL] for pred in preds]
+        
         reals = targets.cpu().detach().numpy().tolist()
         target_lengths_list = target_lengths.cpu().detach().numpy().tolist()
 
@@ -106,23 +108,23 @@ def process(crnn, dataloader, criterion, device, decode_method, beam_size, debug
             real = reals[target_length_counter:target_length_counter + target_length]
             target_length_counter += target_length
             
-            if pred == real:
+            # ⭐ 比较时去除结束标记
+            real_without_eos = [l for l in real if l != CardDataset.EOS_LABEL]
+            
+            if pred == real_without_eos:
                 total_correct += 1
             else:
-                wrong_cases.append((real, pred))
+                wrong_cases.append((real_without_eos, pred))
             
-            # ✅ 打印调试信息（前3个batch）
             if debug and batch_idx < 3:
-                real_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in real])
+                real_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in real_without_eos])
                 pred_text = ''.join([CardDataset.LABEL2CHAR.get(label, '?') for label in pred])
-                status = "✅" if pred == real else "❌"
+                status = "✅" if pred == real_without_eos else "❌"
                 print(f"  [{batch_idx}-{i}] {status} 真实: '{real_text}' | 预测: '{pred_text}'")
         
-        # ✅ 保存第一个batch用于可视化
         if batch_idx == 0:
             first_batch_data = (images, targets, target_lengths, preds)
     
-    # ✅ 可视化第一个batch
     if save_dir and first_batch_data:
         images, targets, target_lengths, preds = first_batch_data
         visualize_predictions(
@@ -131,7 +133,6 @@ def process(crnn, dataloader, criterion, device, decode_method, beam_size, debug
             num_samples=4
         )
     
-    # ✅ 打印错误样本统计
     if debug and len(wrong_cases) > 0:
         print(f"\n错误样本数: {len(wrong_cases)} / {total_count}")
         print("前10个错误样本:")
@@ -141,6 +142,7 @@ def process(crnn, dataloader, criterion, device, decode_method, beam_size, debug
             print(f"  真实: '{real_text}' | 预测: '{pred_text}'")
     
     return total_loss / total_count, total_correct / total_count
+
 
 
 def evaluate(crnn, data_dir, debug=False, save_dir=None):
@@ -178,11 +180,10 @@ def evaluate(crnn, data_dir, debug=False, save_dir=None):
 if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     data_dir = 'D:\\Softwares\\Python\\CreditCard-OCR\\datasets\\recognition\\processed'
-    crnn = CRNN(1, 32, 512, 11)
+    crnn = CRNN(1, 32, 512, 13)  # ⭐ 注意类别数变为13
     crnn.load_state_dict(torch.load('./runs/recognition/run3/checkpoints/crnn best.pt', map_location=device))
     crnn.to(device)
     
-    # ✅ 启用调试模式和可视化
     test_loss, test_accuracy, val_loss, val_accuracy = evaluate(crnn, data_dir, debug=True, save_dir='./visualization')
     
     print('\ntest_loss: ', test_loss)
