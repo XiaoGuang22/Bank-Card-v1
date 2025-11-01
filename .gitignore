@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 模型文件
+*.pth
+*.pt
+*.onnx
+*.weights
+*.pb
+
+# 训练输出
+runs/
+checkpoints/
+logs/
+*.log
+train.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 环境
+venv/
+env/
+ENV/
+.venv/
+conda-env/
+
+# 数据（如果数据太大，也可以添加到这里）
+# datasets/
+# models/
+# CreditCard-OCR/data/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# 临时文件
+*.tmp
+*.temp
+.cache/
+
+# 备份
+.git.backup/
+
