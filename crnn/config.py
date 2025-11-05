@@ -1,5 +1,5 @@
-data_dir = 'D:\Softwares\Python\CreditCard-OCR\datasets/recognition/processed/card-number/attempt'
-img_width = 128
+data_dir = '/home/liangpeng/LXG/Bank-Card-v1/CreditCard-OCR-yxq/datasets'
+img_width = None
 img_height = 32
 epochs = 100
 train_batch_size = 64
