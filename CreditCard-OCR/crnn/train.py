@@ -6,8 +6,39 @@ from model import CRNN
 import torch.optim as optim
 from torch.nn import CTCLoss
 from evaluate import evaluate
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler  # ⭐ 添加 WeightedRandomSampler
 from dataset import CardDataset, cardnumber_collate_fn
+
+
+# ⭐⭐⭐ 新增：创建加权采样器 ⭐⭐⭐
+def create_weighted_sampler(dataset):
+    """
+    创建加权采样器，为困难样本分配更高的权重
+    
+    Args:
+        dataset: CardDataset实例
+    
+    Returns:
+        WeightedRandomSampler
+    """
+    weights = []
+    
+    for is_hard in dataset.is_hard_sample:
+        if is_hard:
+            # ⭐ 困难样本权重为3（被采样概率是普通样本的3倍）
+            weights.append(3.0)
+        else:
+            # 普通样本权重为1
+            weights.append(1.0)
+    
+    # replacement=True 表示有放回采样（同一样本可能在一个epoch中出现多次）
+    sampler = WeightedRandomSampler(
+        weights=weights,
+        num_samples=len(weights),
+        replacement=True
+    )
+    
+    return sampler
 
 
 def train_batch(crnn, data, optimizer, criterion, device):
@@ -44,10 +75,15 @@ def main():
         img_height=img_height, 
         img_width=img_width
     )
+    
+    # ⭐⭐⭐ 新增：创建加权采样器 ⭐⭐⭐
+    weighted_sampler = create_weighted_sampler(train_dataset)
+    
+    # ⭐⭐⭐ 修改：使用加权采样器（注意：使用sampler时不能设置shuffle=True）⭐⭐⭐
     train_loader = DataLoader(
         dataset=train_dataset,
         batch_size=train_batch_size,
-        shuffle=True,
+        sampler=weighted_sampler,  # ⭐ 使用加权采样，替代 shuffle=True
         num_workers=num_workers,
         collate_fn=cardnumber_collate_fn
     )
@@ -62,6 +98,7 @@ def main():
     print(f"BOS标记: '{CardDataset.BOS_CHAR}' (label={CardDataset.BOS_LABEL})")
     print(f"EOS标记: '{CardDataset.EOS_CHAR}' (label={CardDataset.EOS_LABEL})")
     print(f"训练样本数: {len(train_dataset)}")
+    print(f"⭐ 困难样本权重: 3.0x（被采样概率是普通样本的3倍）")  # ⭐ 新增提示
     print(f"{'='*60}\n")
     
     # ⭐ 创建模型
